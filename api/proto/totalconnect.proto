@@ -1,0 +1,131 @@
+syntax = "proto3";
+
+package totalconnect.v1;
+
+option go_package = "github.com/totalconnect/api/v1;totalconnectv1";
+
+// Vault service handles vault unlocking, locking, credentials, and SSH keys.
+service Vault {
+  rpc Unlock(UnlockRequest) returns (UnlockResponse);
+  rpc Lock(LockRequest) returns (LockResponse);
+  rpc AddCredential(AddCredentialRequest) returns (AddCredentialResponse);
+  rpc GetSSHKey(GetSSHKeyRequest) returns (GetSSHKeyResponse);
+}
+
+// File service handles file operations such as listing, transferring, deleting, and syncing files.
+service File {
+  rpc List(ListFilesRequest) returns (ListFilesResponse);
+  rpc Transfer(TransferFileRequest) returns (TransferFileResponse);
+  rpc Delete(DeleteFileRequest) returns (DeleteFileResponse);
+  rpc Sync(SyncFilesRequest) returns (SyncFilesResponse);
+}
+
+// Status service handles system health checks and operation progress tracking.
+service Status {
+  rpc Health(HealthRequest) returns (HealthResponse);
+  rpc GetProgress(GetProgressRequest) returns (GetProgressResponse);
+}
+
+// Vault messages
+message UnlockRequest {
+  string passphrase = 1;
+}
+
+message UnlockResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message LockRequest {}
+
+message LockResponse {
+  bool success = 1;
+}
+
+message AddCredentialRequest {
+  string key = 1;
+  string value = 2;
+}
+
+message AddCredentialResponse {
+  bool success = 1;
+  string id = 2;
+}
+
+message GetSSHKeyRequest {
+  string key_name = 1;
+}
+
+message GetSSHKeyResponse {
+  string key_name = 1;
+  string public_key = 2;
+  string private_key = 3;
+}
+
+// File messages
+message FileInfo {
+  string path = 1;
+  int64 size = 2;
+  bool is_dir = 3;
+  int64 mod_time = 4;
+}
+
+message ListFilesRequest {
+  string path = 1;
+  bool recursive = 2;
+}
+
+message ListFilesResponse {
+  repeated FileInfo files = 1;
+}
+
+message TransferFileRequest {
+  string source = 1;
+  string destination = 2;
+}
+
+message TransferFileResponse {
+  bool success = 1;
+  string task_id = 2;
+}
+
+message DeleteFileRequest {
+  string path = 1;
+  bool recursive = 2;
+}
+
+message DeleteFileResponse {
+  bool success = 1;
+}
+
+message SyncFilesRequest {
+  string source = 1;
+  string destination = 2;
+  bool delete_extraneous = 3;
+}
+
+message SyncFilesResponse {
+  bool success = 1;
+  string task_id = 2;
+}
+
+// Status messages
+message HealthRequest {}
+
+message HealthResponse {
+  string status = 1;
+  string version = 2;
+  map<string, string> details = 3;
+}
+
+message GetProgressRequest {
+  string task_id = 1;
+}
+
+message GetProgressResponse {
+  string task_id = 1;
+  int64 bytes_transferred = 2;
+  int64 total_bytes = 3;
+  double percentage = 4;
+  string status = 5;
+}
