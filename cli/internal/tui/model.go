@@ -35,6 +35,7 @@ type Pane struct {
 	CurrentPath string
 	Files       []FileItem
 	Cursor      int
+	Selected    map[string]bool
 }
 
 // Model represents the main Bubble Tea model for Total Commander TUI.
@@ -64,6 +65,10 @@ type Model struct {
 	TransferActive    bool
 	TransferProgress  float64
 	TaskId            string
+
+	Profiles             []Profile
+	ShowingProfilesModal bool
+	ProfileCursor        int
 }
 
 // NewClient connects to the gRPC server and returns a ready Model.
@@ -77,6 +82,15 @@ func NewClient(addr string) (*Model, error) {
 // main.go calls tui.NewModel(client) where client is *Model.
 func NewModel(m *Model) Model {
 	return *m
+}
+
+// InitialModel builds the zero-state Model for default address or custom address.
+func InitialModel(addr ...string) Model {
+	a := ":50051"
+	if len(addr) > 0 && addr[0] != "" {
+		a = addr[0]
+	}
+	return initialModel(a)
 }
 
 // initialModel builds the zero-state Model before any gRPC connection.
@@ -112,14 +126,19 @@ func initialModel(addr string) Model {
 			Type:        PaneLocal,
 			CurrentPath: cwd,
 			Cursor:      0,
+			Selected:    make(map[string]bool),
 		},
 		RemotePane: Pane{
 			Type:        PaneRemote,
 			CurrentPath: "/",
 			Cursor:      0,
+			Selected:    make(map[string]bool),
 		},
 		StatusMsg: "Press F2 to Unlock Vault | F5 Copy | Tab Switch Pane | F10 Quit",
 	}
+
+	profiles, _ := LoadProfiles()
+	m.Profiles = profiles
 
 	m.LoadLocalFiles()
 	return m

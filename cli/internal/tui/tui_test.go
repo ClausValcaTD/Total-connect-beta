@@ -99,7 +99,7 @@ func TestViewRendering(t *testing.T) {
 	m = updatedModel.(tui.Model)
 
 	viewStr := m.View()
-	if !strings.Contains(viewStr, "Total Commander TUI") {
+	if !strings.Contains(viewStr, "Total Connect") {
 		t.Errorf("expected header in view output")
 	}
 	if !strings.Contains(viewStr, "Local") || !strings.Contains(viewStr, "Remote") {
@@ -107,6 +107,87 @@ func TestViewRendering(t *testing.T) {
 	}
 	if !strings.Contains(viewStr, "F10") {
 		t.Errorf("expected F1-F10 function bar in view output")
+	}
+}
+
+func TestMultiSelectSpaceAndEsc(t *testing.T) {
+	m := tui.InitialModel()
+	m.LocalPane.Files = []tui.FileItem{
+		{Name: "..", Path: "/home", IsDir: true},
+		{Name: "file1.txt", Path: "/home/user/file1.txt", IsDir: false},
+		{Name: "file2.txt", Path: "/home/user/file2.txt", IsDir: false},
+	}
+	m.LocalPane.Cursor = 1
+
+	// Toggle selected file1.txt
+	updatedModel, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+	m = updatedModel.(tui.Model)
+
+	if !m.LocalPane.Selected["/home/user/file1.txt"] {
+		t.Errorf("expected file1.txt to be selected")
+	}
+	if m.LocalPane.Cursor != 2 {
+		t.Errorf("expected cursor to move to 2, got %d", m.LocalPane.Cursor)
+	}
+
+	// Render view and check for selected count
+	m.Width = 100
+	m.Height = 30
+	viewStr := m.View()
+	if !strings.Contains(viewStr, "1 selected") {
+		t.Errorf("expected title to show selected count")
+	}
+
+	// Press Esc to clear selection
+	updatedModel, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updatedModel.(tui.Model)
+
+	if len(m.LocalPane.Selected) != 0 {
+		t.Errorf("expected Selected map to be cleared after Esc")
+	}
+}
+
+func TestProfilesLoadSaveModal(t *testing.T) {
+	plain := "secret123"
+	pass := "myvaultpass"
+
+	enc, err := tui.ExportEncryptPassword(plain, pass)
+	if err != nil {
+		t.Fatalf("encrypt password failed: %v", err)
+	}
+
+	dec, err := tui.ExportDecryptPassword(enc, pass)
+	if err != nil {
+		t.Fatalf("decrypt password failed: %v", err)
+	}
+
+	if dec != plain {
+		t.Errorf("expected decrypted password %s, got %s", plain, dec)
+	}
+
+	m := tui.InitialModel()
+	m.Width = 100
+	m.Height = 30
+
+	// Open profiles modal with F3
+	updatedModel, _ := m.Update(tea.KeyMsg{Type: tea.KeyF3})
+	m = updatedModel.(tui.Model)
+
+	if !m.ShowingProfilesModal {
+		t.Errorf("expected profiles modal to be visible after F3")
+	}
+
+	viewStr := m.View()
+	if !strings.Contains(viewStr, "Connection Profiles") {
+		t.Errorf("expected modal title in view output")
+	}
+
+	// Press Esc to close
+	updatedModel, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updatedModel.(tui.Model)
+
+	if m.ShowingProfilesModal {
+		t.Errorf("expected profiles modal to close after Esc")
 	}
 }
 
