@@ -48,9 +48,11 @@ type Model struct {
 	ProgressBar       progress.Model
 	PassphraseInput   textinput.Model
 	ShowingVaultModal bool
-	ShowingCopyDialog bool // FIX #7: confirmation dialog for F5
-	CopyDialogSrc     string
-	CopyDialogDst     string
+	ShowingCopyDialog  bool // FIX #7: confirmation dialog for F5
+	CopyDialogSrc      string
+	CopyDialogDst      string
+	ShowingMkDirModal  bool
+	MkDirInput         textinput.Model
 	GrpcAddr          string
 	GrpcConnected     bool
 	GrpcConn          *grpc.ClientConn
@@ -90,6 +92,10 @@ func initialModel(addr string) Model {
 	ti.EchoCharacter = '•'
 	ti.CharLimit = 64
 
+	mkdir := textinput.New()
+	mkdir.Placeholder = "New directory name"
+	mkdir.CharLimit = 128
+
 	cwd, err := os.Getwd()
 	if err != nil {
 		cwd = "."
@@ -100,6 +106,7 @@ func initialModel(addr string) Model {
 		Styles:          styles,
 		ProgressBar:     p,
 		PassphraseInput: ti,
+		MkDirInput:      mkdir,
 		GrpcAddr:        addr,
 		LocalPane: Pane{
 			Type:        PaneLocal,
