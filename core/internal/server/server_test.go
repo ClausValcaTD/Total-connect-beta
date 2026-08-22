@@ -3,6 +3,8 @@ package server_test
 import (
 	"context"
 	"net"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -22,9 +24,8 @@ func startTestServer(t *testing.T) (*server.Server, pb.VaultClient, pb.FileClien
 
 	srv := server.NewServer(lis.Addr().String())
 
-	errCh := make(chan error, 1)
 	go func() {
-		errCh <- srv.Serve(lis)
+		_ = srv.Serve(lis)
 	}()
 
 	conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -108,15 +109,21 @@ func TestVaultService(t *testing.T) {
 	}
 }
 
-func TestFileService(t *testing.T) {
-	_, _, fileClient, _, cleanup := startTestServer(t)
+func TestFileServiceAndStatusServiceWithBridgeAndSync(t *testing.T) {
+	_, _, fileClient, statusClient, cleanup := startTestServer(t)
 	defer cleanup()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// List
-	listResp, err := fileClient.List(ctx, &pb.ListFilesRequest{Path: "/test/dir"})
+	tempDir := t.TempDir()
+	file1Path := filepath.Join(tempDir, "sample.txt")
+	if err := os.WriteFile(file1Path, []byte("hello bridge sync"), 0644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+
+	// 1. List files via bridge
+	listResp, err := fileClient.List(ctx, &pb.ListFilesRequest{Path: tempDir})
 	if err != nil {
 		t.Fatalf("List RPC failed: %v", err)
 	}
@@ -124,10 +131,12 @@ func TestFileService(t *testing.T) {
 		t.Errorf("expected non-empty file list response")
 	}
 
-	// Transfer
+	// 2. Transfer file via bridge
+	tempDstDir := t.TempDir()
+	dstFile := filepath.Join(tempDstDir, "sample.txt")
 	transferResp, err := fileClient.Transfer(ctx, &pb.TransferFileRequest{
-		Source:      "/local/path/file.txt",
-		Destination: "/remote/path/file.txt",
+		Source:      file1Path,
+		Destination: dstFile,
 	})
 	if err != nil {
 		t.Fatalf("Transfer RPC failed: %v", err)
@@ -136,51 +145,80 @@ func TestFileService(t *testing.T) {
 		t.Errorf("expected transfer success with job_id, got success=%v, task_id=%s", transferResp.GetSuccess(), transferResp.GetTaskId())
 	}
 
-	// Delete
-	deleteResp, err := fileClient.Delete(ctx, &pb.DeleteFileRequest{Path: "/test/dir/file.txt"})
+	// Wait and check transfer progress via StatusService
+	var transferProg *pb.GetProgressResponse
+	for i := 0; i < 50; i++ {
+		progResp, pErr := statusClient.GetProgress(ctx, &pb.GetProgressRequest{TaskId: transferResp.GetTaskId()})
+		if pErr == nil && (progResp.GetStatus() == "completed" || progResp.GetStatus() == "failed") {
+			transferProg = progResp
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if transferProg == nil || transferProg.GetStatus() != "completed" {
+		t.Errorf("expected transfer status 'completed', got %+v", transferProg)
+	}
+
+	// 3. Sync local directory via Sync Engine
+	syncSrcDir := t.TempDir()
+	syncDstDir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(syncSrcDir, "sync1.txt"), []byte("sync payload"), 0644)
+
+	syncResp, err := fileClient.Sync(ctx, &pb.SyncFilesRequest{
+		Source:      syncSrcDir,
+		Destination: syncDstDir,
+	})
+	if err != nil {
+		t.Fatalf("Sync RPC failed: %v", err)
+	}
+	if !syncResp.GetSuccess() || syncResp.GetTaskId() == "" {
+		t.Errorf("expected sync success with task_id, got success=%v, task_id=%s", syncResp.GetSuccess(), syncResp.GetTaskId())
+	}
+
+	// Wait and check sync progress via StatusService
+	var syncProg *pb.GetProgressResponse
+	for i := 0; i < 50; i++ {
+		progResp, pErr := statusClient.GetProgress(ctx, &pb.GetProgressRequest{TaskId: syncResp.GetTaskId()})
+		if pErr == nil && (progResp.GetStatus() == "completed" || progResp.GetStatus() == "failed") {
+			syncProg = progResp
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if syncProg == nil || syncProg.GetStatus() != "completed" {
+		t.Errorf("expected sync status 'completed', got %+v", syncProg)
+	}
+
+	// Verify file was synced
+	if _, err := os.Stat(filepath.Join(syncDstDir, "sync1.txt")); err != nil {
+		t.Errorf("synced file missing in destination directory")
+	}
+
+	// 4. Delete file
+	deleteFile := filepath.Join(tempDir, "to_delete.txt")
+	_ = os.WriteFile(deleteFile, []byte("delete me"), 0644)
+	deleteResp, err := fileClient.Delete(ctx, &pb.DeleteFileRequest{Path: deleteFile})
 	if err != nil {
 		t.Fatalf("Delete RPC failed: %v", err)
 	}
 	if !deleteResp.GetSuccess() {
 		t.Errorf("expected delete success, got false")
 	}
-
-	// Sync
-	syncResp, err := fileClient.Sync(ctx, &pb.SyncFilesRequest{
-		Source:      "/local/dir",
-		Destination: "/remote/dir",
-	})
-	if err != nil {
-		t.Fatalf("Sync RPC failed: %v", err)
-	}
-	if !syncResp.GetSuccess() || syncResp.GetTaskId() == "" {
-		t.Errorf("expected sync success with job_id, got success=%v, task_id=%s", syncResp.GetSuccess(), syncResp.GetTaskId())
-	}
 }
 
-func TestStatusService(t *testing.T) {
+func TestStatusServiceHealth(t *testing.T) {
 	_, _, _, statusClient, cleanup := startTestServer(t)
 	defer cleanup()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	// Health
 	healthResp, err := statusClient.Health(ctx, &pb.HealthRequest{})
 	if err != nil {
 		t.Fatalf("Health RPC failed: %v", err)
 	}
 	if healthResp.GetStatus() != "ok" {
 		t.Errorf("expected status 'ok', got '%s'", healthResp.GetStatus())
-	}
-
-	// GetProgress
-	progressResp, err := statusClient.GetProgress(ctx, &pb.GetProgressRequest{TaskId: "job-123"})
-	if err != nil {
-		t.Fatalf("GetProgress RPC failed: %v", err)
-	}
-	if progressResp.GetTaskId() != "job-123" || progressResp.GetStatus() == "" {
-		t.Errorf("unexpected progress response: %+v", progressResp)
 	}
 }
 
