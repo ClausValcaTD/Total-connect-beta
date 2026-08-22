@@ -71,6 +71,9 @@ func (m Model) View() string {
 	if m.ShowingCopyDialog {
 		return m.renderCopyDialog(fullView)
 	}
+	if m.ShowingMkDirModal {
+		return m.renderMkDirModal(fullView)
+	}
 	if m.ShowingVaultModal {
 		return m.renderVaultModal(fullView)
 	}
@@ -205,6 +208,30 @@ func (m Model) renderVaultModal(background string) string {
 	)
 
 	dialog := m.Styles.DialogBox.Render(modalContent)
+
+	return lipgloss.Place(
+		m.Width, m.Height,
+		lipgloss.Center, lipgloss.Center,
+		dialog,
+		lipgloss.WithWhitespaceChars(" "),
+		lipgloss.WithWhitespaceForeground(lipgloss.Color("#1a1b26")),
+	)
+}
+
+// renderMkDirModal shows the new directory name input.
+func (m Model) renderMkDirModal(background string) string {
+	paneLabel := "Local"
+	if m.ActivePane == PaneRemote {
+		paneLabel = "Remote"
+	}
+
+	content := fmt.Sprintf(
+		"📁 Make Directory  [%s]\n\nDirectory name:\n\n%s\n\n[Enter] Create  |  [Esc] Cancel",
+		paneLabel,
+		m.MkDirInput.View(),
+	)
+
+	dialog := m.Styles.DialogBox.Render(content)
 
 	return lipgloss.Place(
 		m.Width, m.Height,
