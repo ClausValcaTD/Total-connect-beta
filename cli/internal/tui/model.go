@@ -35,6 +35,7 @@ type Pane struct {
 	CurrentPath string
 	Files       []FileItem
 	Cursor      int
+	Selected    map[string]bool
 }
 
 // Model represents the main Bubble Tea model for Total Commander TUI.
@@ -51,6 +52,12 @@ type Model struct {
 	ShowingCopyDialog bool // FIX #7: confirmation dialog for F5
 	CopyDialogSrc     string
 	CopyDialogDst     string
+	Profiles               []Profile
+	ShowingProfilesModal   bool
+	ProfileCursor          int
+	ShowingNewProfileForm  bool
+	NewProfileInputs       []textinput.Model
+	NewProfileFocus        int
 	GrpcAddr          string
 	GrpcConnected     bool
 	GrpcConn          *grpc.ClientConn
@@ -75,6 +82,11 @@ func NewClient(addr string) (*Model, error) {
 // main.go calls tui.NewModel(client) where client is *Model.
 func NewModel(m *Model) Model {
 	return *m
+}
+
+// InitialModel builds the default Model for testing or startup with default gRPC address.
+func InitialModel() Model {
+	return initialModel(":50051")
 }
 
 // initialModel builds the zero-state Model before any gRPC connection.
@@ -105,13 +117,19 @@ func initialModel(addr string) Model {
 			Type:        PaneLocal,
 			CurrentPath: cwd,
 			Cursor:      0,
+			Selected:    make(map[string]bool),
 		},
 		RemotePane: Pane{
 			Type:        PaneRemote,
 			CurrentPath: "/",
 			Cursor:      0,
+			Selected:    make(map[string]bool),
 		},
 		StatusMsg: "Press F2 to Unlock Vault | F5 Copy | Tab Switch Pane | F10 Quit",
+	}
+
+	if loaded, err := LoadProfiles(); err == nil {
+		m.Profiles = loaded
 	}
 
 	m.LoadLocalFiles()

@@ -140,3 +140,110 @@ func TestVaultModalToggle(t *testing.T) {
 		t.Errorf("expected Vault modal to close after pressing Esc")
 	}
 }
+
+func TestMultiSelectAndEscClear(t *testing.T) {
+	m := tui.InitialModel()
+	m.Width = 100
+	m.Height = 30
+
+	if len(m.LocalPane.Files) == 0 {
+		t.Fatalf("expected local pane files")
+	}
+
+	firstPath := m.LocalPane.Files[0].Path
+
+	// Press space to select first item
+	updatedModel, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+	m = updatedModel.(tui.Model)
+
+	if !m.LocalPane.Selected[firstPath] {
+		t.Errorf("expected first file to be selected after pressing Space")
+	}
+
+	// View should show (1 selected)
+	viewStr := m.View()
+	if !strings.Contains(viewStr, "(1 selected)") {
+		t.Errorf("expected View to contain '(1 selected)', got: %s", viewStr)
+	}
+
+	// Press Esc to clear selection
+	updatedModel, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updatedModel.(tui.Model)
+
+	if len(m.LocalPane.Selected) != 0 {
+		t.Errorf("expected selection to be empty after pressing Esc, got %v", m.LocalPane.Selected)
+	}
+}
+
+func TestProfilesModalToggle(t *testing.T) {
+	m := tui.InitialModel()
+	m.Width = 100
+	m.Height = 30
+
+	if m.ShowingProfilesModal {
+		t.Fatalf("profiles modal should be closed initially")
+	}
+
+	// Press F3 to open profiles modal
+	updatedModel, _ := m.Update(tea.KeyMsg{Type: tea.KeyF3})
+	m = updatedModel.(tui.Model)
+
+	if !m.ShowingProfilesModal {
+		t.Errorf("expected Profiles modal to open after pressing F3")
+	}
+
+	viewStr := m.View()
+	if !strings.Contains(viewStr, "Connection Profiles") {
+		t.Errorf("expected Profiles modal content in view rendering")
+	}
+
+	// Press Esc to close
+	updatedModel, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updatedModel.(tui.Model)
+
+	if m.ShowingProfilesModal {
+		t.Errorf("expected Profiles modal to close after pressing Esc")
+	}
+}
+
+func TestProfilesSaveAndLoad(t *testing.T) {
+	profs := []tui.Profile{
+		{
+			Name:     "Test Server",
+			Backend:  "sftp",
+			Host:     "example.com",
+			Port:     22,
+			User:     "user",
+			Password: "secretpassword",
+			Path:     "/home/user",
+		},
+	}
+
+	passphrase := "myvaultpass"
+	err := tui.SaveProfiles(profs, passphrase)
+	if err != nil {
+		t.Fatalf("failed to save profiles: %v", err)
+	}
+
+	loaded, err := tui.LoadProfiles()
+	if err != nil {
+		t.Fatalf("failed to load profiles: %v", err)
+	}
+
+	if len(loaded) == 0 {
+		t.Fatalf("expected loaded profiles not to be empty")
+	}
+
+	found := false
+	for _, p := range loaded {
+		if p.Name == "Test Server" {
+			found = true
+			if p.Backend != "sftp" || p.Host != "example.com" {
+				t.Errorf("profile fields mismatch: %+v", p)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected to find saved profile in loaded profiles")
+	}
+}

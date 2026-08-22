@@ -2,7 +2,9 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -335,6 +337,116 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		if m.ShowingNewProfileForm {
+			switch msg.String() {
+			case "esc":
+				m.ShowingNewProfileForm = false
+				return m, nil
+			case "tab", "down":
+				m.NewProfileFocus = (m.NewProfileFocus + 1) % len(m.NewProfileInputs)
+				for i := range m.NewProfileInputs {
+					if i == m.NewProfileFocus {
+						m.NewProfileInputs[i].Focus()
+					} else {
+						m.NewProfileInputs[i].Blur()
+					}
+				}
+				return m, textinput.Blink
+			case "shift+tab", "up":
+				m.NewProfileFocus = (m.NewProfileFocus - 1 + len(m.NewProfileInputs)) % len(m.NewProfileInputs)
+				for i := range m.NewProfileInputs {
+					if i == m.NewProfileFocus {
+						m.NewProfileInputs[i].Focus()
+					} else {
+						m.NewProfileInputs[i].Blur()
+					}
+				}
+				return m, textinput.Blink
+			case "enter":
+				portVal, _ := strconv.Atoi(m.NewProfileInputs[3].Value())
+				if portVal == 0 {
+					portVal = 22
+				}
+				newProf := Profile{
+					Name:     m.NewProfileInputs[0].Value(),
+					Backend:  m.NewProfileInputs[1].Value(),
+					Host:     m.NewProfileInputs[2].Value(),
+					Port:     portVal,
+					User:     m.NewProfileInputs[4].Value(),
+					Password: m.NewProfileInputs[5].Value(),
+					Path:     m.NewProfileInputs[6].Value(),
+				}
+				if newProf.Name == "" {
+					newProf.Name = newProf.Host
+				}
+				m.Profiles = append(m.Profiles, newProf)
+				_ = SaveProfiles(m.Profiles, "")
+				m.ShowingNewProfileForm = false
+				return m, nil
+			default:
+				var cmd tea.Cmd
+				m.NewProfileInputs[m.NewProfileFocus], cmd = m.NewProfileInputs[m.NewProfileFocus].Update(msg)
+				return m, cmd
+			}
+		}
+
+		if m.ShowingProfilesModal {
+			switch msg.String() {
+			case "esc":
+				m.ShowingProfilesModal = false
+				return m, nil
+			case "j", "down":
+				if m.ProfileCursor < len(m.Profiles)-1 {
+					m.ProfileCursor++
+				}
+			case "k", "up":
+				if m.ProfileCursor > 0 {
+					m.ProfileCursor--
+				}
+			case "n":
+				m.ShowingNewProfileForm = true
+				m.NewProfileFocus = 0
+				m.NewProfileInputs = make([]textinput.Model, 7)
+				labels := []string{"Name", "Backend (sftp/s3/ftp)", "Host", "Port", "User", "Password", "Remote Path"}
+				for i := 0; i < 7; i++ {
+					m.NewProfileInputs[i] = textinput.New()
+					m.NewProfileInputs[i].Placeholder = labels[i]
+					if i == 5 {
+						m.NewProfileInputs[i].EchoMode = textinput.EchoPassword
+						m.NewProfileInputs[i].EchoCharacter = '•'
+					}
+				}
+				m.NewProfileInputs[0].Focus()
+				return m, textinput.Blink
+			case "delete", "d":
+				if len(m.Profiles) > 0 && m.ProfileCursor < len(m.Profiles) {
+					m.Profiles = append(m.Profiles[:m.ProfileCursor], m.Profiles[m.ProfileCursor+1:]...)
+					if m.ProfileCursor >= len(m.Profiles) && m.ProfileCursor > 0 {
+						m.ProfileCursor--
+					}
+					_ = SaveProfiles(m.Profiles, "")
+				}
+			case "enter":
+				if len(m.Profiles) > 0 && m.ProfileCursor < len(m.Profiles) {
+					prof := m.Profiles[m.ProfileCursor]
+					m.ShowingProfilesModal = false
+					if prof.Host != "" {
+						addr := fmt.Sprintf("%s:%d", prof.Host, prof.Port)
+						if prof.Port == 0 {
+							addr = prof.Host
+						}
+						m.GrpcAddr = addr
+					}
+					if prof.Path != "" {
+						m.RemotePane.CurrentPath = prof.Path
+					}
+					m.StatusMsg = "Connecting to profile: " + prof.Name
+					return m, m.connectGrpcCmd()
+				}
+			}
+			return m, nil
+		}
+
 		// Vault modal input
 		if m.ShowingVaultModal {
 			switch msg.String() {
@@ -366,6 +478,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.ActivePane = PaneRemote
 			} else {
 				m.ActivePane = PaneLocal
+			}
+
+		case "esc":
+			active := m.GetActivePane()
+			active.Selected = make(map[string]bool)
+
+		case " ":
+			active := m.GetActivePane()
+			if active.Selected == nil {
+				active.Selected = make(map[string]bool)
+			}
+			if len(active.Files) > 0 && active.Cursor < len(active.Files) {
+				item := active.Files[active.Cursor]
+				if active.Selected[item.Path] {
+					delete(active.Selected, item.Path)
+				} else {
+					active.Selected[item.Path] = true
+				}
+				if active.Cursor < len(active.Files)-1 {
+					active.Cursor++
+				}
 			}
 
 		case "up", "k":
@@ -453,7 +586,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "f1":
-			m.StatusMsg = "F1: Total Connect TUI | Keys: j/k up/down  h/l nav  Tab switch  F2 vault  F5 copy  F4 sync  F9 reconnect  F10 quit"
+			m.StatusMsg = "F1: Total Connect TUI | Keys: j/k up/down  h/l nav  Tab switch  F2 vault  F3 profiles  F5 copy  F4 sync  F9 reconnect  F10 quit"
 
 		case "f2":
 			if m.VaultUnlocked {
@@ -462,6 +595,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ShowingVaultModal = true
 			m.PassphraseInput.Focus()
 			return m, textinput.Blink
+
+		case "f3":
+			m.ShowingProfilesModal = true
+			m.ProfileCursor = 0
+			return m, nil
 
 		case "f4":
 			// FIX #10: F4 Sync — sync active pane to inactive pane
@@ -477,21 +615,38 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.syncFilesCmd(src, dst)
 
 		case "f5":
-			// FIX #3 + #7: use inactive pane as destination + show confirmation
 			active := m.GetActivePane()
 			inactive := m.GetInactivePane()
-			if len(active.Files) == 0 || active.Cursor >= len(active.Files) {
+			if len(active.Files) == 0 {
 				break
 			}
-			item := active.Files[active.Cursor]
-			if item.Name == ".." {
-				break
+
+			// Check if any files are selected
+			selCount := 0
+			for _, sel := range active.Selected {
+				if sel {
+					selCount++
+				}
 			}
-			src := item.Path
-			dst := filepath.Join(inactive.CurrentPath, item.Name)
-			m.ShowingCopyDialog = true
-			m.CopyDialogSrc = src
-			m.CopyDialogDst = dst
+
+			if selCount > 0 {
+				m.ShowingCopyDialog = true
+				m.CopyDialogSrc = fmt.Sprintf("%d selected files", selCount)
+				m.CopyDialogDst = inactive.CurrentPath
+			} else {
+				if active.Cursor >= len(active.Files) {
+					break
+				}
+				item := active.Files[active.Cursor]
+				if item.Name == ".." {
+					break
+				}
+				src := item.Path
+				dst := filepath.Join(inactive.CurrentPath, item.Name)
+				m.ShowingCopyDialog = true
+				m.CopyDialogSrc = src
+				m.CopyDialogDst = dst
+			}
 
 		case "f8":
 			m.StatusMsg = "Delete: F8 — not yet implemented"

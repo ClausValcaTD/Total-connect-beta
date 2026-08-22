@@ -28,7 +28,7 @@ func (m Model) View() string {
 		vaultStatus = m.Styles.VaultLocked.Render("🔒 Vault Locked")
 	}
 
-	headerContent := fmt.Sprintf(" Total Connect  |  %s  |  %s", connStatus, vaultStatus)
+	headerContent := fmt.Sprintf(" Total Commander TUI  |  %s  |  %s", connStatus, vaultStatus)
 	header := m.Styles.Header.Width(m.Width).Render(headerContent)
 
 	// Calculate inner dimensions
@@ -68,6 +68,12 @@ func (m Model) View() string {
 	fullView := lipgloss.JoinVertical(lipgloss.Left, header, panes, statusLine, funcBar)
 
 	// Overlay modals on top of fullView
+	if m.ShowingNewProfileForm {
+		return m.renderNewProfileForm(fullView)
+	}
+	if m.ShowingProfilesModal {
+		return m.renderProfilesModal(fullView)
+	}
 	if m.ShowingCopyDialog {
 		return m.renderCopyDialog(fullView)
 	}
@@ -91,7 +97,18 @@ func (m Model) renderPane(pane *Pane, isActive bool, width, height int) string {
 		typeStr = "Remote"
 	}
 
-	title := titleStyle.Render(fmt.Sprintf("[%s] %s", typeStr, pane.CurrentPath))
+	selCount := 0
+	for _, sel := range pane.Selected {
+		if sel {
+			selCount++
+		}
+	}
+
+	titleText := fmt.Sprintf("[%s %s]", typeStr, pane.CurrentPath)
+	if selCount > 0 {
+		titleText = fmt.Sprintf("[%s %s] (%d selected)", typeStr, pane.CurrentPath, selCount)
+	}
+	title := titleStyle.Render(titleText)
 
 	var lines []string
 	lines = append(lines, title, "")
@@ -138,12 +155,18 @@ func (m Model) renderPane(pane *Pane, isActive bool, width, height int) string {
 		}
 
 		nameTrunc := item.Name
-		maxNameLen := width - 18
+		maxNameLen := width - 20
 		if maxNameLen > 5 && len(nameTrunc) > maxNameLen {
 			nameTrunc = nameTrunc[:maxNameLen-3] + "..."
 		}
 
-		lineStr := fmt.Sprintf("%s %-*s %s", icon, maxNameLen, nameTrunc, sizeStr)
+		isSelected := pane.Selected[item.Path]
+		checkMark := " "
+		if isSelected {
+			checkMark = m.Styles.FileSelectedMark.Render("✓")
+		}
+
+		lineStr := fmt.Sprintf("%s %s %-*s %s", checkMark, icon, maxNameLen, nameTrunc, sizeStr)
 
 		if i == pane.Cursor {
 			if isActive {
@@ -153,6 +176,8 @@ func (m Model) renderPane(pane *Pane, isActive bool, width, height int) string {
 					Background(lipgloss.Color("#3b4261")).
 					Render(lineStr)
 			}
+		} else if isSelected {
+			lineStr = m.Styles.FileSelectedMark.Render(lineStr)
 		} else {
 			lineStr = itemStyle.Render(lineStr)
 		}
@@ -195,6 +220,69 @@ func (m Model) renderFuncBar() string {
 
 	barContent := strings.Join(items, " ")
 	return m.Styles.FuncBar.Width(m.Width).Render(barContent)
+}
+
+// renderProfilesModal renders connection profiles list.
+func (m Model) renderProfilesModal(background string) string {
+	var lines []string
+	lines = append(lines, "🌐 Connection Profiles", "")
+
+	if len(m.Profiles) == 0 {
+		lines = append(lines, " (No profiles saved)", "")
+	} else {
+		for i, p := range m.Profiles {
+			cursorStr := "  "
+			if i == m.ProfileCursor {
+				cursorStr = "> "
+			}
+			hostStr := p.Host
+			if p.Port > 0 {
+				hostStr = fmt.Sprintf("%s:%d", p.Host, p.Port)
+			}
+			line := fmt.Sprintf("%s%-15s [%s] %s", cursorStr, p.Name, p.Backend, hostStr)
+			if i == m.ProfileCursor {
+				line = m.Styles.FileSelected.Render(line)
+			}
+			lines = append(lines, line)
+		}
+		lines = append(lines, "")
+	}
+
+	lines = append(lines, "[Enter] Connect | [n] New | [Del] Delete | [Esc] Close")
+
+	dialog := m.Styles.DialogBox.Render(strings.Join(lines, "\n"))
+
+	return lipgloss.Place(
+		m.Width, m.Height,
+		lipgloss.Center, lipgloss.Center,
+		dialog,
+		lipgloss.WithWhitespaceChars(" "),
+		lipgloss.WithWhitespaceForeground(lipgloss.Color("#1a1b26")),
+	)
+}
+
+// renderNewProfileForm renders form for creating a new profile.
+func (m Model) renderNewProfileForm(background string) string {
+	var lines []string
+	lines = append(lines, "➕ New Connection Profile", "")
+
+	labels := []string{"Name:", "Backend:", "Host:", "Port:", "User:", "Password:", "Path:"}
+	for i, inp := range m.NewProfileInputs {
+		line := fmt.Sprintf("%-10s %s", labels[i], inp.View())
+		lines = append(lines, line)
+	}
+
+	lines = append(lines, "", "[Tab/Up/Down] Navigate | [Enter] Save | [Esc] Cancel")
+
+	dialog := m.Styles.DialogBox.Render(strings.Join(lines, "\n"))
+
+	return lipgloss.Place(
+		m.Width, m.Height,
+		lipgloss.Center, lipgloss.Center,
+		dialog,
+		lipgloss.WithWhitespaceChars(" "),
+		lipgloss.WithWhitespaceForeground(lipgloss.Color("#1a1b26")),
+	)
 }
 
 // renderVaultModal overlays the passphrase dialog on the background.
