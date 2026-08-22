@@ -4,9 +4,12 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
 	"sync"
 
 	pb "github.com/totalconnect/api/v1"
+	"github.com/totalconnect/bridge"
+	tcsync "github.com/totalconnect/core/internal/sync"
 	"github.com/totalconnect/core/internal/vault"
 	"google.golang.org/grpc"
 )
@@ -137,6 +140,22 @@ func (s *VaultService) GetSSHKey(ctx context.Context, req *pb.GetSSHKeyRequest) 
 // FileService implements the totalconnectv1.FileServer gRPC service.
 type FileService struct {
 	pb.UnimplementedFileServer
+	bridge     *bridge.Bridge
+	syncEngine *tcsync.Engine
+}
+
+// NewFileService creates a new FileService instance.
+func NewFileService(b *bridge.Bridge, engine *tcsync.Engine) *FileService {
+	if b == nil {
+		b = bridge.NewBridge()
+	}
+	if engine == nil {
+		engine = tcsync.NewEngine(b)
+	}
+	return &FileService{
+		bridge:     b,
+		syncEngine: engine,
+	}
 }
 
 // List lists files in the specified path.
@@ -145,34 +164,60 @@ func (s *FileService) List(ctx context.Context, req *pb.ListFilesRequest) (*pb.L
 	if path == "" {
 		path = "."
 	}
+
+	files, err := s.bridge.ListFiles("local", path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list files: %w", err)
+	}
+
+	pbFiles := make([]*pb.FileInfo, 0, len(files))
+	for _, f := range files {
+		pbFiles = append(pbFiles, &pb.FileInfo{
+			Path:    f.Path,
+			Size:    f.Size,
+			IsDir:   f.IsDir,
+			ModTime: f.ModTime.Unix(),
+		})
+	}
+
 	return &pb.ListFilesResponse{
-		Files: []*pb.FileInfo{
-			{
-				Path:    path + "/file1.txt",
-				Size:    1024,
-				IsDir:   false,
-				ModTime: 1600000000,
-			},
-			{
-				Path:    path + "/docs",
-				Size:    4096,
-				IsDir:   true,
-				ModTime: 1600000000,
-			},
-		},
+		Files: pbFiles,
 	}, nil
 }
 
 // Transfer initiates a file transfer and returns a task ID.
 func (s *FileService) Transfer(ctx context.Context, req *pb.TransferFileRequest) (*pb.TransferFileResponse, error) {
+	jobID, err := s.bridge.Transfer(req.GetSource(), req.GetDestination(), "copy")
+	if err != nil {
+		return &pb.TransferFileResponse{
+			Success: false,
+			TaskId:  "",
+		}, err
+	}
 	return &pb.TransferFileResponse{
 		Success: true,
-		TaskId:  "job-transfer-1",
+		TaskId:  jobID,
 	}, nil
 }
 
 // Delete deletes a file or directory.
 func (s *FileService) Delete(ctx context.Context, req *pb.DeleteFileRequest) (*pb.DeleteFileResponse, error) {
+	path := req.GetPath()
+	if path == "" {
+		return &pb.DeleteFileResponse{Success: false}, fmt.Errorf("path required")
+	}
+
+	var err error
+	if req.GetRecursive() {
+		err = os.RemoveAll(path)
+	} else {
+		err = os.Remove(path)
+	}
+
+	if err != nil {
+		return &pb.DeleteFileResponse{Success: false}, err
+	}
+
 	return &pb.DeleteFileResponse{
 		Success: true,
 	}, nil
@@ -180,15 +225,38 @@ func (s *FileService) Delete(ctx context.Context, req *pb.DeleteFileRequest) (*p
 
 // Sync syncs files between source and destination and returns a task ID.
 func (s *FileService) Sync(ctx context.Context, req *pb.SyncFilesRequest) (*pb.SyncFilesResponse, error) {
+	taskID, err := s.syncEngine.Sync(ctx, req.GetSource(), req.GetDestination(), tcsync.PriorityNormal, tcsync.StrategyNewestWins, req.GetDeleteExtraneous())
+	if err != nil {
+		return &pb.SyncFilesResponse{
+			Success: false,
+			TaskId:  "",
+		}, err
+	}
 	return &pb.SyncFilesResponse{
 		Success: true,
-		TaskId:  "job-sync-1",
+		TaskId:  taskID,
 	}, nil
 }
 
 // StatusService implements the totalconnectv1.StatusServer gRPC service.
 type StatusService struct {
 	pb.UnimplementedStatusServer
+	bridge     *bridge.Bridge
+	syncEngine *tcsync.Engine
+}
+
+// NewStatusService creates a new StatusService instance.
+func NewStatusService(b *bridge.Bridge, engine *tcsync.Engine) *StatusService {
+	if b == nil {
+		b = bridge.NewBridge()
+	}
+	if engine == nil {
+		engine = tcsync.NewEngine(b)
+	}
+	return &StatusService{
+		bridge:     b,
+		syncEngine: engine,
+	}
 }
 
 // Health checks system status and returns health info.
@@ -204,12 +272,36 @@ func (s *StatusService) Health(ctx context.Context, req *pb.HealthRequest) (*pb.
 
 // GetProgress returns progress details for a given task ID.
 func (s *StatusService) GetProgress(ctx context.Context, req *pb.GetProgressRequest) (*pb.GetProgressResponse, error) {
+	taskID := req.GetTaskId()
+
+	// Check Sync Engine first
+	if task, err := s.syncEngine.GetTaskProgress(taskID); err == nil {
+		return &pb.GetProgressResponse{
+			TaskId:           task.TaskID,
+			BytesTransferred: task.BytesTransferred,
+			TotalBytes:       task.TotalBytes,
+			Percentage:       task.Percentage,
+			Status:           task.Status,
+		}, nil
+	}
+
+	// Check Bridge
+	if prog, err := s.bridge.GetProgress(taskID); err == nil {
+		return &pb.GetProgressResponse{
+			TaskId:           prog.JobID,
+			BytesTransferred: prog.BytesTransferred,
+			TotalBytes:       prog.TotalBytes,
+			Percentage:       prog.Percentage,
+			Status:           prog.Status,
+		}, nil
+	}
+
 	return &pb.GetProgressResponse{
-		TaskId:           req.GetTaskId(),
-		BytesTransferred: 10240,
-		TotalBytes:       102400,
-		Percentage:       10.0,
-		Status:           "in_progress",
+		TaskId:           taskID,
+		BytesTransferred: 0,
+		TotalBytes:       0,
+		Percentage:       0.0,
+		Status:           "not_found",
 	}, nil
 }
 
@@ -221,6 +313,8 @@ type Server struct {
 	vaultService  *VaultService
 	fileService   *FileService
 	statusService *StatusService
+	bridge        *bridge.Bridge
+	syncEngine    *tcsync.Engine
 }
 
 // NewServer creates a new Server instance with default or given address.
@@ -229,11 +323,16 @@ func NewServer(addr string) *Server {
 		addr = DefaultAddr
 	}
 	v := vault.NewVault()
+	b := bridge.NewBridge()
+	eng := tcsync.NewEngine(b)
+
 	return &Server{
 		addr:          addr,
 		vaultService:  NewVaultService(v),
-		fileService:   &FileService{},
-		statusService: &StatusService{},
+		fileService:   NewFileService(b, eng),
+		statusService: NewStatusService(b, eng),
+		bridge:        b,
+		syncEngine:    eng,
 	}
 }
 
@@ -250,6 +349,16 @@ func (s *Server) FileService() *FileService {
 // StatusService returns the attached StatusService.
 func (s *Server) StatusService() *StatusService {
 	return s.statusService
+}
+
+// Bridge returns the attached Bridge.
+func (s *Server) Bridge() *bridge.Bridge {
+	return s.bridge
+}
+
+// SyncEngine returns the attached SyncEngine.
+func (s *Server) SyncEngine() *tcsync.Engine {
+	return s.syncEngine
 }
 
 // Addr returns the listening address of the server.

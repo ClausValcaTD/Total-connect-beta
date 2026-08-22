@@ -1,6 +1,6 @@
 *~
 _junk/
-rclone
+/rclone
 rclone.exe
 build
 /docs/public/
@@ -20,3 +20,4 @@ __pycache__
 .DS_Store
 resource_windows_*.syso
 .devcontainer
+!bridge/internal/rclone/
