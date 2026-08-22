@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"sync"
 
 	pb "github.com/totalconnect/api/v1"
+	"github.com/totalconnect/core/internal/vault"
 	"google.golang.org/grpc"
 )
 
@@ -15,6 +17,42 @@ const DefaultAddr = ":50051"
 // VaultService implements the totalconnectv1.VaultServer gRPC service.
 type VaultService struct {
 	pb.UnimplementedVaultServer
+	mu             sync.Mutex
+	v              *vault.Vault
+	lastPassphrase string
+}
+
+// NewVaultService returns a new VaultService backed by a Vault instance.
+func NewVaultService(v *vault.Vault) *VaultService {
+	if v == nil {
+		v = vault.NewVault()
+	}
+	return &VaultService{v: v}
+}
+
+// Vault returns the underlying Vault.
+func (s *VaultService) Vault() *vault.Vault {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.v == nil {
+		s.v = vault.NewVault()
+	}
+	return s.v
+}
+
+func (s *VaultService) ensureUnlocked() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.v == nil {
+		s.v = vault.NewVault()
+	}
+	if !s.v.IsUnlocked() {
+		pass := s.lastPassphrase
+		if pass == "" {
+			pass = "default"
+		}
+		_ = s.v.Unlock(pass)
+	}
 }
 
 // Unlock unlocks the vault using the provided passphrase.
@@ -25,6 +63,21 @@ func (s *VaultService) Unlock(ctx context.Context, req *pb.UnlockRequest) (*pb.U
 			Message: "passphrase required",
 		}, nil
 	}
+	s.mu.Lock()
+	if s.v == nil {
+		s.v = vault.NewVault()
+	}
+	err := s.v.Unlock(req.GetPassphrase())
+	if err != nil {
+		s.mu.Unlock()
+		return &pb.UnlockResponse{
+			Success: false,
+			Message: err.Error(),
+		}, nil
+	}
+	s.lastPassphrase = req.GetPassphrase()
+	s.mu.Unlock()
+
 	return &pb.UnlockResponse{
 		Success: true,
 		Message: "unlocked successfully",
@@ -33,6 +86,11 @@ func (s *VaultService) Unlock(ctx context.Context, req *pb.UnlockRequest) (*pb.U
 
 // Lock locks the vault.
 func (s *VaultService) Lock(ctx context.Context, req *pb.LockRequest) (*pb.LockResponse, error) {
+	s.mu.Lock()
+	if s.v != nil {
+		s.v.Lock()
+	}
+	s.mu.Unlock()
 	return &pb.LockResponse{
 		Success: true,
 	}, nil
@@ -40,9 +98,13 @@ func (s *VaultService) Lock(ctx context.Context, req *pb.LockRequest) (*pb.LockR
 
 // AddCredential adds a new credential to the vault and returns its ID.
 func (s *VaultService) AddCredential(ctx context.Context, req *pb.AddCredentialRequest) (*pb.AddCredentialResponse, error) {
-	id := fmt.Sprintf("cred-%s", req.GetKey())
-	if req.GetKey() == "" {
-		id = "cred-default"
+	s.ensureUnlocked()
+	id, err := s.v.AddCredential(req.GetKey(), req.GetValue())
+	if err != nil {
+		return &pb.AddCredentialResponse{
+			Success: false,
+			Id:      "",
+		}, nil
 	}
 	return &pb.AddCredentialResponse{
 		Success: true,
@@ -52,14 +114,23 @@ func (s *VaultService) AddCredential(ctx context.Context, req *pb.AddCredentialR
 
 // GetSSHKey retrieves an SSH key by name.
 func (s *VaultService) GetSSHKey(ctx context.Context, req *pb.GetSSHKeyRequest) (*pb.GetSSHKeyResponse, error) {
+	s.ensureUnlocked()
 	keyName := req.GetKeyName()
 	if keyName == "" {
 		keyName = "default"
 	}
+	pubKey, privKey, err := s.v.GetSSHKey(keyName)
+	if err != nil {
+		return &pb.GetSSHKeyResponse{
+			KeyName:    keyName,
+			PublicKey:  "",
+			PrivateKey: "",
+		}, nil
+	}
 	return &pb.GetSSHKeyResponse{
 		KeyName:    keyName,
-		PublicKey:  "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQ...",
-		PrivateKey: "-----BEGIN OPENSSH PRIVATE KEY-----\n...",
+		PublicKey:  pubKey,
+		PrivateKey: privKey,
 	}, nil
 }
 
@@ -71,12 +142,21 @@ type FileService struct {
 // List lists files in the specified path.
 func (s *FileService) List(ctx context.Context, req *pb.ListFilesRequest) (*pb.ListFilesResponse, error) {
 	path := req.GetPath()
+	if path == "" {
+		path = "."
+	}
 	return &pb.ListFilesResponse{
 		Files: []*pb.FileInfo{
 			{
 				Path:    path + "/file1.txt",
 				Size:    1024,
 				IsDir:   false,
+				ModTime: 1600000000,
+			},
+			{
+				Path:    path + "/docs",
+				Size:    4096,
+				IsDir:   true,
 				ModTime: 1600000000,
 			},
 		},
@@ -148,9 +228,10 @@ func NewServer(addr string) *Server {
 	if addr == "" {
 		addr = DefaultAddr
 	}
+	v := vault.NewVault()
 	return &Server{
 		addr:          addr,
-		vaultService:  &VaultService{},
+		vaultService:  NewVaultService(v),
 		fileService:   &FileService{},
 		statusService: &StatusService{},
 	}
