@@ -5,7 +5,7 @@ import (
 	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/ClausValcaTD/Total-connect-beta/cli/internal/tui"
+	"github.com/totalconnect/cli/internal/tui"
 )
 
 func main() {

@@ -36,6 +36,7 @@ type Styles struct {
 	FileDir          lipgloss.Style
 	FileItem         lipgloss.Style
 	FileSelected     lipgloss.Style
+	FileSelectedMark lipgloss.Style
 	FuncKeyNum       lipgloss.Style
 	FuncKeyLabel     lipgloss.Style
 	FuncBar          lipgloss.Style
@@ -96,6 +97,10 @@ func DefaultStyles() Styles {
 		FileSelected: lipgloss.NewStyle().
 			Background(ColorSelectedBg).
 			Foreground(ColorSelectedFg).
+			Bold(true),
+
+		FileSelectedMark: lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#e0af68")).
 			Bold(true),
 
 		FuncKeyNum: lipgloss.NewStyle().

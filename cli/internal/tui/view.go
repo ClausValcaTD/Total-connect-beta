@@ -71,6 +71,9 @@ func (m Model) View() string {
 	if m.ShowingCopyDialog {
 		return m.renderCopyDialog(fullView)
 	}
+	if m.ShowingProfilesModal {
+		return m.renderProfilesModal(fullView)
+	}
 	if m.ShowingMkDirModal {
 		return m.renderMkDirModal(fullView)
 	}
@@ -94,7 +97,18 @@ func (m Model) renderPane(pane *Pane, isActive bool, width, height int) string {
 		typeStr = "Remote"
 	}
 
-	title := titleStyle.Render(fmt.Sprintf("[%s] %s", typeStr, pane.CurrentPath))
+	selCount := 0
+	for _, v := range pane.Selected {
+		if v {
+			selCount++
+		}
+	}
+
+	titleStr := fmt.Sprintf("[%s %s]", typeStr, pane.CurrentPath)
+	if selCount > 0 {
+		titleStr += fmt.Sprintf(" (%d selected)", selCount)
+	}
+	title := titleStyle.Render(titleStr)
 
 	var lines []string
 	lines = append(lines, title, "")
@@ -160,6 +174,10 @@ func (m Model) renderPane(pane *Pane, isActive bool, width, height int) string {
 			lineStr = itemStyle.Render(lineStr)
 		}
 
+		if pane.Selected[item.Path] {
+			lineStr = m.Styles.FileSelectedMark.Render("✓ ") + lineStr
+		}
+
 		lines = append(lines, lineStr)
 	}
 
@@ -198,6 +216,35 @@ func (m Model) renderFuncBar() string {
 
 	barContent := strings.Join(items, " ")
 	return m.Styles.FuncBar.Width(m.Width).Render(barContent)
+}
+
+func (m Model) renderProfilesModal(background string) string {
+	var lines []string
+	lines = append(lines, "🔌 Connection Profiles", "")
+
+	if len(m.Profiles) == 0 {
+		lines = append(lines, "  (No saved profiles)")
+	} else {
+		for i, p := range m.Profiles {
+			lineStr := fmt.Sprintf("▶ %s  [%s]  %s:%d", p.Name, p.Backend, p.Host, p.Port)
+			if i == m.ProfileCursor {
+				lineStr = m.Styles.FileSelected.Render(lineStr)
+			}
+			lines = append(lines, lineStr)
+		}
+	}
+
+	lines = append(lines, "", "[Enter] Connect  [n] New  [Del] Remove  [Esc] Close")
+	content := strings.Join(lines, "\n")
+	dialog := m.Styles.DialogBox.Render(content)
+
+	return lipgloss.Place(
+		m.Width, m.Height,
+		lipgloss.Center, lipgloss.Center,
+		dialog,
+		lipgloss.WithWhitespaceChars(" "),
+		lipgloss.WithWhitespaceForeground(lipgloss.Color("#1a1b26")),
+	)
 }
 
 // renderVaultModal overlays the passphrase dialog on the background.

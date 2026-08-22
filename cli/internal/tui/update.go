@@ -401,6 +401,51 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+		// Profiles modal input
+		if m.ShowingProfilesModal {
+			switch msg.String() {
+			case "down", "j":
+				if m.ProfileCursor < len(m.Profiles)-1 {
+					m.ProfileCursor++
+				}
+				return m, nil
+			case "up", "k":
+				if m.ProfileCursor > 0 {
+					m.ProfileCursor--
+				}
+				return m, nil
+			case "enter":
+				if len(m.Profiles) > 0 && m.ProfileCursor >= 0 && m.ProfileCursor < len(m.Profiles) {
+					p := m.Profiles[m.ProfileCursor]
+					m.GrpcAddr = fmt.Sprintf("%s:%d", p.Host, p.Port)
+					if p.Path != "" {
+						m.RemotePane.CurrentPath = p.Path
+					}
+					m.ShowingProfilesModal = false
+					return m, m.connectGrpcCmd()
+				}
+				m.ShowingProfilesModal = false
+				return m, nil
+			case "n":
+				m.StatusMsg = "New profile: coming soon"
+				return m, nil
+			case "delete":
+				if len(m.Profiles) > 0 && m.ProfileCursor >= 0 && m.ProfileCursor < len(m.Profiles) {
+					m.Profiles = append(m.Profiles[:m.ProfileCursor], m.Profiles[m.ProfileCursor+1:]...)
+					if m.ProfileCursor >= len(m.Profiles) && m.ProfileCursor > 0 {
+						m.ProfileCursor--
+					}
+					_ = SaveProfiles(m.Profiles, "")
+				}
+				return m, nil
+			case "esc":
+				m.ShowingProfilesModal = false
+				return m, nil
+			default:
+				return m, nil
+			}
+		}
+
 		// Vault modal input
 		if m.ShowingVaultModal {
 			switch msg.String() {
@@ -529,6 +574,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.PassphraseInput.Focus()
 			return m, textinput.Blink
 
+		case "f3":
+			m.ShowingProfilesModal = true
+			m.ProfileCursor = 0
+			return m, nil
+
 		case "f4":
 			// FIX #10: F4 Sync — sync active pane to inactive pane
 			active := m.GetActivePane()
@@ -542,22 +592,69 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.StatusMsg = "Syncing " + src + " → " + dst
 			return m, m.syncFilesCmd(src, dst)
 
+		case " ":
+			var pane *Pane
+			if m.ActivePane == PaneLocal {
+				pane = &m.LocalPane
+			} else {
+				pane = &m.RemotePane
+			}
+			if pane.Selected == nil {
+				pane.Selected = make(map[string]bool)
+			}
+			if len(pane.Files) > 0 && pane.Cursor < len(pane.Files) {
+				item := pane.Files[pane.Cursor]
+				if item.Name != ".." {
+					if pane.Selected[item.Path] {
+						delete(pane.Selected, item.Path)
+					} else {
+						pane.Selected[item.Path] = true
+					}
+				}
+				if pane.Cursor < len(pane.Files)-1 {
+					pane.Cursor++
+				}
+			}
+
+		case "esc":
+			if m.ActivePane == PaneLocal {
+				m.LocalPane.Selected = make(map[string]bool)
+			} else {
+				m.RemotePane.Selected = make(map[string]bool)
+			}
+
 		case "f5":
-			// FIX #3 + #7: use inactive pane as destination + show confirmation
 			active := m.GetActivePane()
 			inactive := m.GetInactivePane()
-			if len(active.Files) == 0 || active.Cursor >= len(active.Files) {
-				break
+
+			var selectedPaths []string
+			for path, sel := range active.Selected {
+				if sel {
+					selectedPaths = append(selectedPaths, path)
+				}
 			}
-			item := active.Files[active.Cursor]
-			if item.Name == ".." {
-				break
+
+			if len(selectedPaths) > 0 {
+				for _, src := range selectedPaths {
+					dst := filepath.Join(inactive.CurrentPath, filepath.Base(src))
+					cmds = append(cmds, m.transferFileCmd(src, dst))
+				}
+				return m, tea.Batch(cmds...)
+			} else {
+				// Existing single-file behavior
+				if len(active.Files) == 0 || active.Cursor >= len(active.Files) {
+					break
+				}
+				item := active.Files[active.Cursor]
+				if item.Name == ".." {
+					break
+				}
+				src := item.Path
+				dst := filepath.Join(inactive.CurrentPath, item.Name)
+				m.ShowingCopyDialog = true
+				m.CopyDialogSrc = src
+				m.CopyDialogDst = dst
 			}
-			src := item.Path
-			dst := filepath.Join(inactive.CurrentPath, item.Name)
-			m.ShowingCopyDialog = true
-			m.CopyDialogSrc = src
-			m.CopyDialogDst = dst
 
 		case "f7":
 			m.ShowingMkDirModal = true
