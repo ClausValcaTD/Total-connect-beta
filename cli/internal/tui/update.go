@@ -62,7 +62,10 @@ func (m Model) connectGrpcCmd() tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 
-		conn, err := grpc.DialContext(ctx, m.GrpcAddr, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock())
+		conn, err := grpc.DialContext(ctx, m.GrpcAddr,
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithBlock(),
+		)
 		if err != nil {
 			return grpcConnectedMsg{err: err}
 		}
@@ -158,12 +161,45 @@ func (m Model) transferFileCmd(src, dst string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 
-		res, err := m.FileClient.Transfer(ctx, &pb.TransferFileRequest{Source: src, Destination: dst})
+		res, err := m.FileClient.Transfer(ctx, &pb.TransferFileRequest{
+			Source:      src,
+			Destination: dst,
+		})
 		if err != nil {
 			return transferStartedMsg{success: false, msg: err.Error()}
 		}
 
-		return transferStartedMsg{taskId: res.GetTaskId(), success: res.GetSuccess(), msg: "Transfer started"}
+		return transferStartedMsg{
+			taskId:  res.GetTaskId(),
+			success: res.GetSuccess(),
+			msg:     "Transfer started",
+		}
+	}
+}
+
+func (m Model) syncFilesCmd(src, dst string) tea.Cmd {
+	return func() tea.Msg {
+		if m.FileClient == nil {
+			return transferStartedMsg{success: false, msg: "gRPC server not connected"}
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+
+		res, err := m.FileClient.Sync(ctx, &pb.SyncFilesRequest{
+			Source:            src,
+			Destination:       dst,
+			DeleteExtraneous:  false,
+		})
+		if err != nil {
+			return transferStartedMsg{success: false, msg: err.Error()}
+		}
+
+		return transferStartedMsg{
+			taskId:  res.GetTaskId(),
+			success: res.GetSuccess(),
+			msg:     "Sync started",
+		}
 	}
 }
 
@@ -208,7 +244,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case grpcConnectedMsg:
 		if msg.err != nil {
 			m.GrpcConnected = false
-			m.StatusMsg = "gRPC Connection Failed (:50051)"
+			m.StatusMsg = "gRPC Connection Failed — press F9 to retry"
 		} else {
 			m.GrpcConnected = true
 			m.GrpcConn = msg.conn
@@ -220,7 +256,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case remoteFilesMsg:
-		if msg.err == nil && len(msg.files) > 0 {
+		if msg.err != nil {
+			// FIX #5: show helpful message when remote is unreachable
+			m.RemotePane.Files = []FileItem{
+				{Name: "[ Not connected — press F9 to reconnect ]", IsDir: false},
+			}
+		} else {
 			m.RemotePane.Files = msg.files
 			if m.RemotePane.Cursor >= len(msg.files) {
 				m.RemotePane.Cursor = 0
@@ -258,7 +299,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.done {
 			m.TransferActive = false
 			m.TransferProgress = 1.0
-			m.StatusMsg = "Transfer Complete"
+			m.StatusMsg = "✅ Transfer Complete"
 		} else {
 			cmds = append(cmds, func() tea.Msg {
 				time.Sleep(500 * time.Millisecond)
@@ -281,7 +322,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.KeyMsg:
-		// Modal input takes precedence
+		// FIX #7: Copy confirmation dialog takes top priority
+		if m.ShowingCopyDialog {
+			switch msg.String() {
+			case "enter", "y", "Y":
+				m.ShowingCopyDialog = false
+				return m, m.transferFileCmd(m.CopyDialogSrc, m.CopyDialogDst)
+			case "esc", "n", "N":
+				m.ShowingCopyDialog = false
+				m.StatusMsg = "Copy cancelled"
+			}
+			return m, nil
+		}
+
+		// Vault modal input
 		if m.ShowingVaultModal {
 			switch msg.String() {
 			case "enter":
@@ -298,10 +352,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		active := m.GetActivePane()
-
+		// FIX #4: work directly on LocalPane/RemotePane fields,
+		// not via a local pointer that doesn't write back to Model.
 		switch msg.String() {
-		case "ctrl+c", "q", "f10":
+		case "ctrl+c", "f10":
 			if m.GrpcConn != nil {
 				_ = m.GrpcConn.Close()
 			}
@@ -315,52 +369,91 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "up", "k":
-			if active.Cursor > 0 {
-				active.Cursor--
+			if m.ActivePane == PaneLocal {
+				if m.LocalPane.Cursor > 0 {
+					m.LocalPane.Cursor--
+				}
+			} else {
+				if m.RemotePane.Cursor > 0 {
+					m.RemotePane.Cursor--
+				}
 			}
 
 		case "down", "j":
-			if active.Cursor < len(active.Files)-1 {
-				active.Cursor++
+			if m.ActivePane == PaneLocal {
+				if m.LocalPane.Cursor < len(m.LocalPane.Files)-1 {
+					m.LocalPane.Cursor++
+				}
+			} else {
+				if m.RemotePane.Cursor < len(m.RemotePane.Files)-1 {
+					m.RemotePane.Cursor++
+				}
 			}
 
 		case "g":
-			active.Cursor = 0
+			if m.ActivePane == PaneLocal {
+				m.LocalPane.Cursor = 0
+			} else {
+				m.RemotePane.Cursor = 0
+			}
 
 		case "G":
-			if len(active.Files) > 0 {
-				active.Cursor = len(active.Files) - 1
+			if m.ActivePane == PaneLocal {
+				if len(m.LocalPane.Files) > 0 {
+					m.LocalPane.Cursor = len(m.LocalPane.Files) - 1
+				}
+			} else {
+				if len(m.RemotePane.Files) > 0 {
+					m.RemotePane.Cursor = len(m.RemotePane.Files) - 1
+				}
 			}
 
 		case "left", "h", "backspace":
-			if active.CurrentPath != "/" && active.CurrentPath != "." {
-				active.CurrentPath = filepath.Dir(active.CurrentPath)
-				if active.Type == PaneLocal {
+			if m.ActivePane == PaneLocal {
+				if m.LocalPane.CurrentPath != "/" && m.LocalPane.CurrentPath != "." {
+					m.LocalPane.CurrentPath = filepath.Dir(m.LocalPane.CurrentPath)
+					m.LocalPane.Cursor = 0
 					m.LoadLocalFiles()
-				} else {
-					cmds = append(cmds, m.listRemoteFilesCmd(active.CurrentPath))
+				}
+			} else {
+				if m.RemotePane.CurrentPath != "/" && m.RemotePane.CurrentPath != "" {
+					m.RemotePane.CurrentPath = filepath.Dir(m.RemotePane.CurrentPath)
+					m.RemotePane.Cursor = 0
+					cmds = append(cmds, m.listRemoteFilesCmd(m.RemotePane.CurrentPath))
 				}
 			}
 
 		case "enter", "right", "l":
-			if len(active.Files) > 0 && active.Cursor < len(active.Files) {
-				item := active.Files[active.Cursor]
-				if item.IsDir {
-					if item.Name == ".." {
-						active.CurrentPath = filepath.Dir(active.CurrentPath)
-					} else {
-						active.CurrentPath = item.Path
-					}
-					if active.Type == PaneLocal {
+			if m.ActivePane == PaneLocal {
+				if len(m.LocalPane.Files) > 0 && m.LocalPane.Cursor < len(m.LocalPane.Files) {
+					item := m.LocalPane.Files[m.LocalPane.Cursor]
+					if item.IsDir {
+						if item.Name == ".." {
+							m.LocalPane.CurrentPath = filepath.Dir(m.LocalPane.CurrentPath)
+						} else {
+							m.LocalPane.CurrentPath = item.Path
+						}
+						m.LocalPane.Cursor = 0
 						m.LoadLocalFiles()
-					} else {
-						cmds = append(cmds, m.listRemoteFilesCmd(active.CurrentPath))
+					}
+				}
+			} else {
+				if len(m.RemotePane.Files) > 0 && m.RemotePane.Cursor < len(m.RemotePane.Files) {
+					item := m.RemotePane.Files[m.RemotePane.Cursor]
+					if item.IsDir {
+						if item.Name == ".." {
+							m.RemotePane.CurrentPath = filepath.Dir(m.RemotePane.CurrentPath)
+						} else {
+							m.RemotePane.CurrentPath = item.Path
+						}
+						m.RemotePane.Cursor = 0
+						cmds = append(cmds, m.listRemoteFilesCmd(m.RemotePane.CurrentPath))
 					}
 				}
 			}
 
 		case "f1":
-			m.StatusMsg = "F1: Total Commander TUI v0.1 | Keys: Vim (j,k,h,l,g,G) + Arrows"
+			m.StatusMsg = "F1: Total Connect TUI | Keys: j/k up/down  h/l nav  Tab switch  F2 vault  F5 copy  F4 sync  F9 reconnect  F10 quit"
 
 		case "f2":
 			if m.VaultUnlocked {
@@ -370,17 +463,42 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.PassphraseInput.Focus()
 			return m, textinput.Blink
 
-		case "f5":
-			if len(active.Files) > 0 && active.Cursor < len(active.Files) {
-				src := active.Files[active.Cursor].Path
-				dst := "/destination/" + active.Files[active.Cursor].Name
-				return m, m.transferFileCmd(src, dst)
+		case "f4":
+			// FIX #10: F4 Sync — sync active pane to inactive pane
+			active := m.GetActivePane()
+			inactive := m.GetInactivePane()
+			if len(active.Files) == 0 {
+				m.StatusMsg = "Nothing to sync"
+				break
 			}
+			src := active.CurrentPath
+			dst := inactive.CurrentPath
+			m.StatusMsg = "Syncing " + src + " → " + dst
+			return m, m.syncFilesCmd(src, dst)
+
+		case "f5":
+			// FIX #3 + #7: use inactive pane as destination + show confirmation
+			active := m.GetActivePane()
+			inactive := m.GetInactivePane()
+			if len(active.Files) == 0 || active.Cursor >= len(active.Files) {
+				break
+			}
+			item := active.Files[active.Cursor]
+			if item.Name == ".." {
+				break
+			}
+			src := item.Path
+			dst := filepath.Join(inactive.CurrentPath, item.Name)
+			m.ShowingCopyDialog = true
+			m.CopyDialogSrc = src
+			m.CopyDialogDst = dst
 
 		case "f8":
-			m.StatusMsg = "Delete requested (F8)"
+			m.StatusMsg = "Delete: F8 — not yet implemented"
 
 		case "f9":
+			m.GrpcConnected = false
+			m.StatusMsg = "Reconnecting..."
 			return m, m.connectGrpcCmd()
 		}
 	}
