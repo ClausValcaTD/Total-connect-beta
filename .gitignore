@@ -1,23 +1,51 @@
-*~
-_junk/
-/rclone
-rclone.exe
-build
-/docs/public/
-/docs/.hugo_build.lock
-/docs/static/img/logos/
-rclone.iml
-.idea
-.history
-.vscode
+# Binaries
+tc-server
+tc-cli
+tc
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Go
+*.log
 *.test
-*.iml
-fuzz-build.zip
-*.orig
-*.rej
-Thumbs.db
-__pycache__
+*.out
+vendor/
+go.work.sum
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
 .DS_Store
-resource_windows_*.syso
-.devcontainer
-!bridge/internal/rclone/
+Thumbs.db
+desktop.ini
+
+# Protoc
+protoc-*.zip
+protoc/
+*.pb.go.tmp
+
+# Build artifacts
+dist/
+build/
+bin/
+
+# Test coverage
+coverage.html
+coverage.out
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Temporary
+tmp/
+temp/
+*.tmp
