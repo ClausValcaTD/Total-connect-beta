@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -47,6 +48,9 @@ type Model struct {
 	ProgressBar       progress.Model
 	PassphraseInput   textinput.Model
 	ShowingVaultModal bool
+	ShowingCopyDialog bool // FIX #7: confirmation dialog for F5
+	CopyDialogSrc     string
+	CopyDialogDst     string
 	GrpcAddr          string
 	GrpcConnected     bool
 	GrpcConn          *grpc.ClientConn
@@ -60,8 +64,21 @@ type Model struct {
 	TaskId            string
 }
 
-// InitialModel constructs and initializes a default Model.
-func InitialModel() Model {
+// NewClient connects to the gRPC server and returns a ready Model.
+// FIX #1 + #2: replaces the missing NewClient / NewModel pair.
+func NewClient(addr string) (*Model, error) {
+	m := initialModel(addr)
+	return &m, nil
+}
+
+// NewModel wraps an existing *Model pointer for tea.NewProgram.
+// main.go calls tui.NewModel(client) where client is *Model.
+func NewModel(m *Model) Model {
+	return *m
+}
+
+// initialModel builds the zero-state Model before any gRPC connection.
+func initialModel(addr string) Model {
 	styles := DefaultStyles()
 
 	p := progress.New(progress.WithDefaultGradient())
@@ -83,7 +100,7 @@ func InitialModel() Model {
 		Styles:          styles,
 		ProgressBar:     p,
 		PassphraseInput: ti,
-		GrpcAddr:        ":50051",
+		GrpcAddr:        addr,
 		LocalPane: Pane{
 			Type:        PaneLocal,
 			CurrentPath: cwd,
@@ -150,4 +167,27 @@ func (m *Model) GetActivePane() *Pane {
 		return &m.LocalPane
 	}
 	return &m.RemotePane
+}
+
+// GetInactivePane returns pointer to the unfocused Pane.
+func (m *Model) GetInactivePane() *Pane {
+	if m.ActivePane == PaneLocal {
+		return &m.RemotePane
+	}
+	return &m.LocalPane
+}
+
+// FormatSize converts bytes to a human-readable string.
+// FIX #6: replaces raw "%8d B" formatting.
+func FormatSize(b int64) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%6d B", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%6.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
 }
