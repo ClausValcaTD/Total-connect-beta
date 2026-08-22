@@ -10,15 +10,15 @@ import (
 // View renders the TUI layout.
 func (m Model) View() string {
 	if m.Width == 0 {
-		return "Initializing Total Commander TUI..."
+		return "Initializing Total Connect TUI..."
 	}
 
 	// 1. Header Bar
 	var connStatus string
 	if m.GrpcConnected {
-		connStatus = m.Styles.StatusConnected.Render("● Connected (:50051)")
+		connStatus = m.Styles.StatusConnected.Render("● Connected (" + m.GrpcAddr + ")")
 	} else {
-		connStatus = m.Styles.StatusDisconnect.Render("○ Offline (:50051)")
+		connStatus = m.Styles.StatusDisconnect.Render("○ Offline (" + m.GrpcAddr + ")")
 	}
 
 	var vaultStatus string
@@ -28,7 +28,7 @@ func (m Model) View() string {
 		vaultStatus = m.Styles.VaultLocked.Render("🔒 Vault Locked")
 	}
 
-	headerContent := fmt.Sprintf(" Total Commander TUI   |   %s   |   %s", connStatus, vaultStatus)
+	headerContent := fmt.Sprintf(" Total Connect  |  %s  |  %s", connStatus, vaultStatus)
 	header := m.Styles.Header.Width(m.Width).Render(headerContent)
 
 	// Calculate inner dimensions
@@ -51,9 +51,9 @@ func (m Model) View() string {
 	var middleBar string
 	if m.TransferActive {
 		barView := m.ProgressBar.ViewAs(m.TransferProgress)
-		middleBar = fmt.Sprintf(" Transferring: [%s] %.0f%%  %s", barView, m.TransferProgress*100, m.StatusMsg)
+		middleBar = fmt.Sprintf(" Transferring: %s %.0f%%  %s", barView, m.TransferProgress*100, m.StatusMsg)
 	} else {
-		middleBar = fmt.Sprintf(" Status: %s", m.StatusMsg)
+		middleBar = fmt.Sprintf(" %s", m.StatusMsg)
 	}
 	statusLine := lipgloss.NewStyle().
 		Width(m.Width).
@@ -67,7 +67,10 @@ func (m Model) View() string {
 	// 5. Combine layout
 	fullView := lipgloss.JoinVertical(lipgloss.Left, header, panes, statusLine, funcBar)
 
-	// Overlay modal if passphrase input requested
+	// Overlay modals on top of fullView
+	if m.ShowingCopyDialog {
+		return m.renderCopyDialog(fullView)
+	}
 	if m.ShowingVaultModal {
 		return m.renderVaultModal(fullView)
 	}
@@ -108,6 +111,15 @@ func (m Model) renderPane(pane *Pane, isActive bool, width, height int) string {
 		endIdx = len(pane.Files)
 	}
 
+	// FIX #5: show placeholder when remote has no files yet
+	if len(pane.Files) == 0 && pane.Type == PaneRemote {
+		placeholder := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#414868")).
+			Italic(true).
+			Render("  Not connected — press F9")
+		lines = append(lines, placeholder)
+	}
+
 	for i := startIdx; i < endIdx; i++ {
 		item := pane.Files[i]
 		icon := "📄"
@@ -117,24 +129,29 @@ func (m Model) renderPane(pane *Pane, isActive bool, width, height int) string {
 			itemStyle = m.Styles.FileDir
 		}
 
-		sizeStr := fmt.Sprintf("%8d B", item.Size)
+		// FIX #6: human-readable file sizes
+		var sizeStr string
 		if item.IsDir {
-			sizeStr = "    <DIR> "
+			sizeStr = "    <DIR>"
+		} else {
+			sizeStr = FormatSize(item.Size)
 		}
 
 		nameTrunc := item.Name
-		maxNameLen := width - 20
+		maxNameLen := width - 18
 		if maxNameLen > 5 && len(nameTrunc) > maxNameLen {
 			nameTrunc = nameTrunc[:maxNameLen-3] + "..."
 		}
 
-		lineStr := fmt.Sprintf("%s %-20s %s", icon, nameTrunc, sizeStr)
+		lineStr := fmt.Sprintf("%s %-*s %s", icon, maxNameLen, nameTrunc, sizeStr)
 
 		if i == pane.Cursor {
 			if isActive {
 				lineStr = m.Styles.FileSelected.Render(lineStr)
 			} else {
-				lineStr = lipgloss.NewStyle().Background(lipgloss.Color("#3b4261")).Render(lineStr)
+				lineStr = lipgloss.NewStyle().
+					Background(lipgloss.Color("#3b4261")).
+					Render(lineStr)
 			}
 		} else {
 			lineStr = itemStyle.Render(lineStr)
@@ -158,7 +175,7 @@ func (m Model) renderFuncBar() string {
 		Label string
 	}{
 		{"F1", "Help"},
-		{"F2", "Unl/Lck"},
+		{"F2", "Vault"},
 		{"F3", "View"},
 		{"F4", "Sync"},
 		{"F5", "Copy"},
@@ -180,6 +197,7 @@ func (m Model) renderFuncBar() string {
 	return m.Styles.FuncBar.Width(m.Width).Render(barContent)
 }
 
+// renderVaultModal overlays the passphrase dialog on the background.
 func (m Model) renderVaultModal(background string) string {
 	modalContent := fmt.Sprintf(
 		"🔐 Unlock Vault\n\nEnter Master Passphrase:\n\n%s\n\n[Enter] Confirm  |  [Esc] Cancel",
@@ -188,12 +206,39 @@ func (m Model) renderVaultModal(background string) string {
 
 	dialog := m.Styles.DialogBox.Render(modalContent)
 
-	// Center dialog over screen
 	return lipgloss.Place(
-		m.Width,
-		m.Height,
-		lipgloss.Center,
-		lipgloss.Center,
+		m.Width, m.Height,
+		lipgloss.Center, lipgloss.Center,
+		dialog,
+		lipgloss.WithWhitespaceChars(" "),
+		lipgloss.WithWhitespaceForeground(lipgloss.Color("#1a1b26")),
+	)
+}
+
+// FIX #7: renderCopyDialog shows src→dst confirmation before any transfer.
+func (m Model) renderCopyDialog(background string) string {
+	src := m.CopyDialogSrc
+	dst := m.CopyDialogDst
+
+	// Truncate long paths for display
+	maxLen := m.Width/2 - 6
+	if maxLen > 0 && len(src) > maxLen {
+		src = "..." + src[len(src)-maxLen:]
+	}
+	if maxLen > 0 && len(dst) > maxLen {
+		dst = "..." + dst[len(dst)-maxLen:]
+	}
+
+	content := fmt.Sprintf(
+		"📋 Copy File\n\n  From: %s\n  To:   %s\n\n[Enter / Y] Confirm  |  [Esc / N] Cancel",
+		src, dst,
+	)
+
+	dialog := m.Styles.DialogBox.Render(content)
+
+	return lipgloss.Place(
+		m.Width, m.Height,
+		lipgloss.Center, lipgloss.Center,
 		dialog,
 		lipgloss.WithWhitespaceChars(" "),
 		lipgloss.WithWhitespaceForeground(lipgloss.Color("#1a1b26")),
