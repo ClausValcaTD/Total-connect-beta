@@ -9,15 +9,14 @@ import (
 )
 
 func main() {
-	// Connect to gRPC server
+	// FIX #1 + #2: NewClient now exists and returns *Model
 	client, err := tui.NewClient(":50051")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to connect to gRPC server: %v\n", err)
-		fmt.Fprintf(os.Stderr, "Make sure tc-server is running on :50051\n")
+		fmt.Fprintf(os.Stderr, "Failed to initialize TUI: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Launch TUI
+	// NewModel unwraps *Model into the value tea.NewProgram expects
 	p := tea.NewProgram(
 		tui.NewModel(client),
 		tea.WithAltScreen(),
