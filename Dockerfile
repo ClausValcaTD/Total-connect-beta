@@ -1,53 +1,40 @@
-FROM golang:alpine AS builder
+# Build stage
+FROM golang:1.21-alpine AS builder
 
-ARG CGO_ENABLED=0
+WORKDIR /app
 
-WORKDIR /go/src/github.com/rclone/rclone/
+# Install dependencies
+RUN apk add --no-cache git make protoc
 
-RUN echo "**** Set Go Environment Variables ****" && \
-    go env -w GOCACHE=/root/.cache/go-build
+# Copy go mod files
+COPY go.work go.work.sum ./
+COPY api/proto/go.mod api/proto/go.sum ./api/proto/
+COPY bridge/go.mod bridge/go.sum ./bridge/
+COPY cli/go.mod cli/go.sum ./cli/
+COPY core/go.mod core/go.sum ./core/
 
-RUN echo "**** Install Dependencies ****" && \
-    apk add --no-cache \
-        make \
-        bash \
-        gawk \
-        git
+# Download dependencies
+RUN go work sync
 
-COPY go.mod .
-COPY go.sum .
-
-RUN echo "**** Download Go Dependencies ****" && \
-    go mod download -x
-
-RUN echo "**** Verify Go Dependencies ****" && \
-    go mod verify
-
+# Copy source code
 COPY . .
 
-RUN --mount=type=cache,target=/root/.cache/go-build,sharing=locked \
-    echo "**** Build Binary ****" && \
-    make
+# Build binaries
+RUN make build
 
-RUN echo "**** Print Version Binary ****" && \
-    ./rclone version
-
-# Begin final image
+# Runtime stage
 FROM alpine:latest
 
-RUN echo "**** Install Dependencies ****" && \
-    apk add --no-cache \
-        ca-certificates \
-        fuse3 \
-        tzdata && \
-    echo "Enable user_allow_other in fuse" && \
-    echo "user_allow_other" >> /etc/fuse.conf
+RUN apk --no-cache add ca-certificates
 
-COPY --from=builder /go/src/github.com/rclone/rclone/rclone /usr/local/bin/
+WORKDIR /root/
 
-RUN addgroup -g 1009 rclone && adduser -u 1009 -Ds /bin/sh -G rclone rclone
+# Copy binaries from builder
+COPY --from=builder /app/tc-server .
+COPY --from=builder /app/tc-cli .
 
-ENTRYPOINT [ "rclone" ]
+# Expose gRPC port
+EXPOSE 50051
 
-WORKDIR /data
-ENV XDG_CONFIG_HOME=/config
+# Default command
+CMD ["./tc-server"]
