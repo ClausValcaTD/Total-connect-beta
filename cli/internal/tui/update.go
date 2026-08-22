@@ -2,6 +2,8 @@ package tui
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -48,6 +50,12 @@ type progressMsg struct {
 }
 
 type tickMsg time.Time
+
+type mkDirResultMsg struct {
+	path    string
+	isLocal bool
+	err     error
+}
 
 // Init initializes background commands like gRPC connection attempt.
 func (m Model) Init() tea.Cmd {
@@ -228,6 +236,26 @@ func (m Model) checkProgressCmd(taskId string) tea.Cmd {
 	}
 }
 
+func (m Model) mkDirCmd(path string, isLocal bool) tea.Cmd {
+	return func() tea.Msg {
+		if isLocal {
+			err := os.MkdirAll(path, 0o755)
+			return mkDirResultMsg{path: path, isLocal: true, err: err}
+		}
+		// Remote mkdir via gRPC — reuse Transfer with isDir hint via path ending in /
+		if m.FileClient == nil {
+			return mkDirResultMsg{err: grpc.ErrServerStopped, isLocal: false}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		// proto Delete/Transfer don't have mkdir — use Sync with empty source as workaround
+		// until proto adds a Mkdir RPC; for now only local mkdir is fully supported
+		_ = ctx
+		_ = cancel
+		return mkDirResultMsg{path: path, isLocal: false, err: fmt.Errorf("remote mkdir requires server-side support")}
+	}
+}
+
 // Update handles incoming messages and key/mouse events.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
@@ -312,6 +340,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, m.checkProgressCmd(m.TaskId))
 		}
 
+	case mkDirResultMsg:
+		if msg.err != nil {
+			m.StatusMsg = "❌ MkDir failed: " + msg.err.Error()
+		} else {
+			m.StatusMsg = "✅ Created: " + msg.path
+			if msg.isLocal {
+				m.LoadLocalFiles()
+			} else {
+				cmds = append(cmds, m.listRemoteFilesCmd(m.RemotePane.CurrentPath))
+			}
+		}
+
 	case tea.MouseMsg:
 		if msg.Action == tea.MouseActionPress {
 			if msg.X < m.Width/2 {
@@ -333,6 +373,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.StatusMsg = "Copy cancelled"
 			}
 			return m, nil
+		}
+
+		// MkDir modal
+		if m.ShowingMkDirModal {
+			switch msg.String() {
+			case "enter":
+				name := m.MkDirInput.Value()
+				if name == "" {
+					m.ShowingMkDirModal = false
+					break
+				}
+				active := m.GetActivePane()
+				newPath := filepath.Join(active.CurrentPath, name)
+				isLocal := m.ActivePane == PaneLocal
+				m.ShowingMkDirModal = false
+				m.MkDirInput.Reset()
+				return m, m.mkDirCmd(newPath, isLocal)
+			case "esc":
+				m.ShowingMkDirModal = false
+				m.MkDirInput.Reset()
+				return m, nil
+			default:
+				var cmd tea.Cmd
+				m.MkDirInput, cmd = m.MkDirInput.Update(msg)
+				return m, cmd
+			}
 		}
 
 		// Vault modal input
@@ -492,6 +558,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ShowingCopyDialog = true
 			m.CopyDialogSrc = src
 			m.CopyDialogDst = dst
+
+		case "f7":
+			m.ShowingMkDirModal = true
+			m.MkDirInput.Reset()
+			m.MkDirInput.Focus()
+			return m, textinput.Blink
 
 		case "f8":
 			m.StatusMsg = "Delete: F8 — not yet implemented"
