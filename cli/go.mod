@@ -1,4 +1,4 @@
-module github.com/totalconnect/cli
+module github.com/ClausValcaTD/Total-connect-beta/cli
 
 go 1.25.0
 
