@@ -1,3 +1,3 @@
-module github.com/totalconnect/api/v1
+module github.com/ClausValcaTD/Total-connect-beta/api/proto
 
 go 1.25.0
