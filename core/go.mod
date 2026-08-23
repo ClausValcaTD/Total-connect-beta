@@ -1,4 +1,4 @@
-module github.com/totalconnect/core
+module github.com/ClausValcaTD/Total-connect-beta/core
 
 go 1.25.0
 
